@@ -1,0 +1,36 @@
+<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>出貨身份單｜唯讀查閱</title><style>body{font:16px/1.7 system-ui,sans-serif;color:#172b3d;background:#f1f5f9;margin:0;padding:24px}.gate{background:white;max-width:440px;margin:8vh auto;padding:32px;border-radius:14px;border:1px solid #dce5ed}h1{font-size:24px}p{color:#64748b}label{display:block;margin:24px 0 8px}input,button{font:inherit;width:100%;box-sizing:border-box;padding:12px;border-radius:7px}input{border:1px solid #aebed0}button{background:#176bba;color:white;border:0;margin-top:18px;cursor:pointer}#error{color:#a63224}#slip{background:white;max-width:1100px;margin:auto;padding:24px;overflow:auto}table{border-collapse:collapse;width:100%;font-size:14px}td,th{padding:10px;border-bottom:1px solid #dbe2e9;text-align:left}.sign{margin-top:35px;display:flex;gap:30px}.hidden{display:none}</style></head><body><section id="gate" class="gate"><small>福星利華 · 倉儲出貨</small><h1>查看出貨身份單</h1><p>輸入共用車次密碼，即可唯讀查看本張單據。</p><form id="open-form"><label for="password">車次密碼</label><input id="password" type="password" autocomplete="off" required><button id="open">開啟身份單</button></form><p id="error" role="alert"></p></section><article id="slip" class="hidden"></article><script>(function(root){
+  'use strict';
+  function b64(bytes){var s='';bytes.forEach(function(b){s+=String.fromCharCode(b);});return btoa(s).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');}
+  function unb64(s){if(!/^[A-Za-z0-9_-]{1,10000}$/.test(s))throw Error('QR 資料格式不正確');var t=s.replace(/-/g,'+').replace(/_/g,'/');while(t.length%4)t+='=';return Uint8Array.from(atob(t),function(c){return c.charCodeAt(0);});}
+  async function key(pw,salt){var base=await crypto.subtle.importKey('raw',new TextEncoder().encode(pw),'PBKDF2',false,['deriveKey']);return crypto.subtle.deriveKey({name:'PBKDF2',salt:salt,iterations:200000,hash:'SHA-256'},base,{name:'AES-GCM',length:256},false,['encrypt','decrypt']);}
+  async function transform(bytes,compress){var stream=new Blob([bytes]).stream().pipeThrough(compress?new CompressionStream('deflate'):new DecompressionStream('deflate'));var reader=stream.getReader(),chunks=[],size=0;while(true){var r=await reader.read();if(r.done)break;size+=r.value.length;if(size>200000){await reader.cancel();throw Error('身份單資料過大');}chunks.push(r.value);}var out=new Uint8Array(size),off=0;chunks.forEach(function(c){out.set(c,off);off+=c.length;});return out;}
+  async function encryptSlip(slip,pw){
+    if(!crypto.subtle||!root.CompressionStream)throw Error('請使用支援加密與壓縮的 Chrome、Edge 或 Safari，並以 HTTPS 開啟');
+    var raw=new TextEncoder().encode(JSON.stringify(slip));if(raw.length>100000)throw Error('身份單過大');
+    var zipped=await transform(raw,true),plain=new Uint8Array(zipped.length+1);plain[0]=1;plain.set(zipped,1);
+    var salt=crypto.getRandomValues(new Uint8Array(16)),iv=crypto.getRandomValues(new Uint8Array(12));
+    var ct=new Uint8Array(await crypto.subtle.encrypt({name:'AES-GCM',iv:iv,tagLength:128},await key(pw,salt),plain));
+    var result=new Uint8Array(28+ct.length);result.set(salt);result.set(iv,16);result.set(ct,28);return b64(result);
+  }
+  async function decryptSlip(payload,pw){
+    var bytes=unb64(payload);if(bytes.length<45)throw Error('QR 資料不完整');
+    var plain=new Uint8Array(await crypto.subtle.decrypt({name:'AES-GCM',iv:bytes.slice(16,28),tagLength:128},await key(pw,bytes.slice(0,16)),bytes.slice(28)));
+    // Byte 1 = compressed JSON. Legacy JSON has no marker and remains readable.
+    var raw=plain[0]===1?await transform(plain.slice(1),false):plain;
+    var s=JSON.parse(new TextDecoder().decode(raw));if(!s||!s.no||!Array.isArray(s.items)||s.items.length>100)throw Error('身份單格式錯誤');return s;
+  }
+  root.ShippingCrypto={encryptSlip:encryptSlip,decryptSlip:decryptSlip};
+})(typeof globalThis!=='undefined'?globalThis:this);
+</script><script>(function(root){
+  'use strict';
+  function esc(v){return String(v==null?'':v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
+  var css='body{font:15px/1.6 system-ui,sans-serif;color:#172334;margin:32px}h1{font-size:24px;margin-bottom:4px}p{margin:6px 0}table{border-collapse:collapse;width:100%;margin:22px 0;font-size:13px}th,td{border-bottom:1px solid #cbd5e1;padding:8px;text-align:left;vertical-align:top}th{background:#f1f5f9}.sign{display:flex;justify-content:space-between;margin-top:48px}small{color:#64748b}@media print{body{margin:10mm}button{display:none}thead{display:table-header-group}tr{break-inside:avoid}}';
+  function body(s){return '<h1>'+(s.documentOnly?'出貨身份單（未扣庫）':s.type==='sale'?'王田倉出貨明細':'王田倉入庫身份單')+'</h1><small>福星利華酒業 · 倉儲出貨</small><p>系統單號：'+esc(s.no)+'　ERP 單號：'+esc(s.erpNo)+'</p><p>單據日期：'+esc(s.date)+'　確認時間：'+esc(s.confirmedAt)+'</p><p>路線：'+esc(s.route)+'　經手人：'+esc(s.handler||'—')+'</p><table><thead><tr><th>SKU（商品條碼）</th><th>商品名稱</th><th>板</th><th>箱</th><th>疊法</th></tr></thead><tbody>'+s.items.map(function(p){return '<tr><td>'+esc(p.barcode)+'</td><td>'+esc(p.name)+'</td><td>'+esc(p.pallets)+'</td><td>'+esc(p.cases)+'</td><td>'+esc(p.stacking)+'</td></tr>';}).join('')+'</tbody><tfoot><tr><th colspan="2">合計</th><th>'+esc(s.totalPallets)+'</th><th>'+esc(s.totalCases)+'</th><th></th></tr></tfoot></table><div class="sign"><span>司機簽收：________________</span><span>'+(s.documentOnly?'收貨方':s.type==='sale'?'客戶':'王田倉')+'收貨：________________</span></div>';}
+  function file(s){return '<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>'+esc(s.no)+' 出貨身份單</title><style>'+css+'</style></head><body>'+body(s)+'</body></html>';}
+  function qr(url){if(new TextEncoder().encode(url).length>2200)throw Error('身份單超過單張 QR 容量，請分成多張 ERP 單據');var box=document.createElement('div');try{QrCreator.render({text:url,ecLevel:'M',size:1000,radius:0,fill:'#000',background:'#fff',quiet:4},box);}catch(e){throw Error('QR 容量不足，請分單');}var canvas=box.querySelector('canvas');if(!canvas)throw Error('QR 產生失敗');return canvas.toDataURL('image/png');}
+  root.ShippingSlip={escape:esc,body:body,file:file,qr:qr,css:css};
+})(typeof globalThis!=='undefined'?globalThis:this);
+</script><script>
+const encrypted=location.hash.slice(1);if(!encrypted){document.getElementById('error').textContent='請掃描外箱上的 QR 開啟身份單。';document.getElementById('open').disabled=true;}
+document.getElementById('open-form').onsubmit=async e=>{e.preventDefault();const button=document.getElementById('open');button.disabled=true;document.getElementById('error').textContent='';try{const s=await ShippingCrypto.decryptSlip(encrypted,document.getElementById('password').value);document.getElementById('slip').innerHTML=ShippingSlip.body(s);document.getElementById('slip').classList.remove('hidden');document.getElementById('gate').classList.add('hidden');document.getElementById('password').value='';}catch(e){document.getElementById('error').textContent='密碼錯誤、資料損毀，或瀏覽器不支援解密。';}finally{button.disabled=false;}};
+</script></body></html>
